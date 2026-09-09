@@ -6,9 +6,7 @@ import com.google.gson.JsonObject
 import com.qwenbridge.data.*
 import fi.iki.elonen.NanoHTTPD
 import kotlinx.coroutines.runBlocking
-import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
-import java.io.InputStream
 import java.io.PipedInputStream
 import java.io.PipedOutputStream
 import kotlin.concurrent.thread
@@ -33,44 +31,63 @@ class EmbeddedProxyServer(
 
         configManager.incrementRequestsCount()
 
+        val map = HashMap<String, String>()
+        if (method == Method.POST || method == Method.PUT) {
+            try {
+                session.parseBody(map)
+            } catch (ignored: Exception) {}
+        }
+        val postData = map["postData"] ?: ""
+        var capturedResponseBody = ""
+
         return try {
             when {
                 uri == "/v1/models" && method == Method.GET -> {
-                    handleModels()
+                    handleModels().also { capturedResponseBody = "[Model List JSON]" }
                 }
                 uri == "/v1/chat/completions" && method == Method.POST -> {
-                    handleChatCompletions(session)
+                    handleChatCompletions(session, postData).also {
+                        capturedResponseBody = if (postData.contains("\"stream\":true")) "[Streaming SSE Chunks]" else "[Chat Completion JSON]"
+                    }
+                }
+                (uri == "/v1/images/generations" || uri == "/v1/images/edits") && method == Method.POST -> {
+                    handleImageGeneration(session, postData).also {
+                        capturedResponseBody = "[Image Generation JSON]"
+                    }
+                }
+                uri == "/v1/videos/generations" && method == Method.POST -> {
+                    handleVideoGeneration(session, postData).also {
+                        capturedResponseBody = "[Video Generation JSON]"
+                    }
                 }
                 uri == "/v1/validate" -> {
-                    handleValidate(session)
+                    handleValidate(session).also { capturedResponseBody = "[Token Validation JSON]" }
                 }
                 uri == "/health" || uri == "/status" -> {
-                    handleHealth()
+                    handleHealth().also { capturedResponseBody = "[Health Status JSON]" }
                 }
                 else -> {
-                    createCorsResponse(
-                        Response.Status.NOT_FOUND,
-                        "application/json",
-                        gson.toJson(mapOf("error" to "Endpoint not found: $uri"))
-                    )
+                    val notFoundMsg = gson.toJson(mapOf("error" to "Endpoint not found: $uri"))
+                    capturedResponseBody = notFoundMsg
+                    createCorsResponse(Response.Status.NOT_FOUND, "application/json", notFoundMsg)
                 }
             }
         } catch (e: Exception) {
             val durationMs = (System.nanoTime() - startNs) / 1_000_000
+            val errMsg = gson.toJson(mapOf("error" to (e.message ?: "Internal Server Error")))
             configManager.addLog(
                 LogEntry(
                     method = method.name,
                     path = uri,
                     statusCode = 500,
                     durationMs = durationMs,
-                    details = e.message ?: "Internal Server Error"
+                    details = e.message ?: "Internal Server Error",
+                    requestHeaders = session.headers,
+                    requestBody = postData,
+                    responseBody = errMsg
                 )
             )
-            createCorsResponse(
-                Response.Status.INTERNAL_ERROR,
-                "application/json",
-                gson.toJson(mapOf("error" to (e.message ?: "Internal Server Error")))
-            )
+            createCorsResponse(Response.Status.INTERNAL_ERROR, "application/json", errMsg)
         }.also { response ->
             val durationMs = (System.nanoTime() - startNs) / 1_000_000
             val code = response.status.requestStatus
@@ -80,7 +97,11 @@ class EmbeddedProxyServer(
                     path = uri,
                     statusCode = code,
                     durationMs = durationMs,
-                    details = "Served in ${durationMs}ms"
+                    details = "Served in ${durationMs}ms",
+                    requestHeaders = session.headers,
+                    requestBody = postData,
+                    responseHeaders = response.headers,
+                    responseBody = capturedResponseBody
                 )
             )
         }
@@ -106,10 +127,7 @@ class EmbeddedProxyServer(
     private fun handleValidate(session: IHTTPSession): Response {
         val token = extractToken(session)
         val (isValid, message) = runBlocking { apiClient.validateToken(token) }
-        val map = mapOf(
-            "valid" to isValid,
-            "message" to message
-        )
+        val map = mapOf("valid" to isValid, "message" to message)
         return createCorsResponse(
             if (isValid) Response.Status.OK else Response.Status.UNAUTHORIZED,
             "application/json",
@@ -117,12 +135,38 @@ class EmbeddedProxyServer(
         )
     }
 
-    private fun handleChatCompletions(session: IHTTPSession): Response {
-        val map = HashMap<String, String>()
-        session.parseBody(map)
-        val postData = map["postData"] ?: ""
-        val chatRequest = gson.fromJson(postData, OpenAIChatRequest::class.java)
+    private fun handleImageGeneration(session: IHTTPSession, postData: String): Response {
+        val token = extractToken(session)
+        if (token.isEmpty()) {
+            return createCorsResponse(
+                Response.Status.UNAUTHORIZED,
+                "application/json",
+                gson.toJson(mapOf("error" to "No Qwen Access Token provided."))
+            )
+        }
 
+        val imgRequest = gson.fromJson(postData, OpenAIImageGenerationRequest::class.java)
+        val result = runBlocking { apiClient.generateImage(imgRequest, token) }
+        return createCorsResponse(Response.Status.OK, "application/json", gson.toJson(result))
+    }
+
+    private fun handleVideoGeneration(session: IHTTPSession, postData: String): Response {
+        val token = extractToken(session)
+        if (token.isEmpty()) {
+            return createCorsResponse(
+                Response.Status.UNAUTHORIZED,
+                "application/json",
+                gson.toJson(mapOf("error" to "No Qwen Access Token provided."))
+            )
+        }
+
+        val videoRequest = gson.fromJson(postData, OpenAIVideoGenerationRequest::class.java)
+        val result = runBlocking { apiClient.generateVideo(videoRequest, token) }
+        return createCorsResponse(Response.Status.OK, "application/json", gson.toJson(result))
+    }
+
+    private fun handleChatCompletions(session: IHTTPSession, postData: String): Response {
+        val chatRequest = gson.fromJson(postData, OpenAIChatRequest::class.java)
         val token = extractToken(session)
         if (token.isEmpty()) {
             return createCorsResponse(
@@ -152,7 +196,7 @@ class EmbeddedProxyServer(
                 }
             }
 
-            val response = NanoHTTPD.newChunkedResponse(
+            val response = Response.newChunkedResponse(
                 Response.Status.OK,
                 "text/event-stream; charset=utf-8",
                 pipedInputStream
@@ -169,7 +213,6 @@ class EmbeddedProxyServer(
             val rawSse = byteStream.toString(Charsets.UTF_8.name())
 
             var fullContent = ""
-            var reasoningContent = ""
             var finalModel = chatRequest.model
 
             rawSse.lines().forEach { line ->
@@ -180,7 +223,6 @@ class EmbeddedProxyServer(
                         if (choices != null && choices.size() > 0) {
                             val delta = choices[0].asJsonObject.getAsJsonObject("delta")
                             delta.get("content")?.asString?.let { fullContent += it }
-                            delta.get("reasoning_content")?.asString?.let { reasoningContent += it }
                         }
                     } catch (ignored: Exception) {}
                 }
@@ -222,7 +264,7 @@ class EmbeddedProxyServer(
     }
 
     private fun createCorsResponse(status: Response.IStatus, mimeType: String, txt: String): Response {
-        val res = NanoHTTPD.newFixedLengthResponse(status, mimeType, txt)
+        val res = Response.newFixedLengthResponse(status, mimeType, txt)
         addCorsHeaders(res)
         return res
     }

@@ -12,6 +12,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
@@ -22,9 +23,10 @@ import com.qwenbridge.ui.theme.*
 
 enum class AppDestination(val route: String, val title: String, val icon: ImageVector) {
     DASHBOARD("dashboard", "Dashboard", Icons.Default.Dashboard),
-    TOKEN("token", "Token", Icons.Default.Key),
-    SETUP("setup", "Setup", Icons.Default.Security),
+    CHAT("chat", "Chat", Icons.Default.Chat),
+    STUDIO("studio", "Studio", Icons.Default.AutoFixHigh),
     LOGS("logs", "Logs", Icons.Default.FormatListBulleted),
+    TOKEN("token", "Token", Icons.Default.Key),
     SETTINGS("settings", "Settings", Icons.Default.Settings)
 }
 
@@ -64,11 +66,12 @@ class MainActivity : ComponentActivity() {
                                     icon = {
                                         Icon(
                                             imageVector = destination.icon,
-                                            contentDescription = destination.title
+                                            contentDescription = destination.title,
+                                            modifier = Modifier.size(20.dp)
                                         )
                                     },
                                     label = {
-                                        Text(text = destination.title)
+                                        Text(text = destination.title, fontSize = 10.sp)
                                     },
                                     colors = NavigationBarItemDefaults.colors(
                                         selectedIconColor = PrimaryIndigo,
@@ -95,21 +98,27 @@ class MainActivity : ComponentActivity() {
                             composable(AppDestination.DASHBOARD.route) {
                                 DashboardScreen(
                                     configManager = configManager,
-                                    onNavigateToSetup = { navController.navigate(AppDestination.SETUP.route) },
+                                    onNavigateToSetup = { navController.navigate("setup") },
                                     onNavigateToToken = { navController.navigate(AppDestination.TOKEN.route) }
                                 )
                             }
-                            composable(AppDestination.TOKEN.route) {
-                                TokenScreen(configManager = configManager)
+                            composable(AppDestination.CHAT.route) {
+                                ChatPlaygroundScreen(configManager = configManager)
                             }
-                            composable(AppDestination.SETUP.route) {
-                                SetupWizardScreen()
+                            composable(AppDestination.STUDIO.route) {
+                                MediaStudioScreen(configManager = configManager)
                             }
                             composable(AppDestination.LOGS.route) {
                                 LogsScreen(configManager = configManager)
                             }
+                            composable(AppDestination.TOKEN.route) {
+                                TokenScreen(configManager = configManager)
+                            }
                             composable(AppDestination.SETTINGS.route) {
                                 SettingsScreen(configManager = configManager)
+                            }
+                            composable("setup") {
+                                SetupWizardScreen()
                             }
                         }
                     }

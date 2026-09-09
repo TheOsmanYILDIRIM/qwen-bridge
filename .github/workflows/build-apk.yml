@@ -45,16 +45,14 @@ jobs:
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main'
         with:
-          tag_name: v1.0.0
-          name: "Qwen Bridge v1.0.0 (Local API Proxy + Auto Bot Challenge Solver)"
+          tag_name: v1.1.0
+          name: "Qwen Bridge v1.1.0 (Multimodal Vision, Media Studio & Deep Log Inspection)"
           body: |
-            ### 🌉 Qwen Bridge Mobile App v1.0.0
+            ### 🌉 Qwen Bridge Mobile App v1.1.0
 
-            Android foreground service and embedded OpenAI-compatible API bridge for Qwen Web with automated bot challenge & CAPTCHA overlay solver.
-
-            #### 🚀 Key Features:
-            - **Local OpenAI API Proxy**: Embedded NanoHTTPD server at `http://localhost:8787` (`/v1/chat/completions`, `/v1/models`).
-            - **Auto Challenge & WAF Solver**: Detects Alibaba Baxia / Cloudflare challenges, surfaces a floating interactive overlay on screen, and persists session cookies.
-            - **Aggressive Anti-Kill Keep-Alive**: Multi-layer foreground service (`specialUse`), MediaSession keep-alive, WakeLock, Alarm watchdog, and OEM Autostart guidance.
-            - **Tool-Call & Thinking Support**: Real-time translation for MCP/Agentic tools and deep thinking mode.
+            #### 🚀 New Features in v1.1.0:
+            - **Deep In/Out Log Inspection**: Tap any request in the Logs tab to view full formatted Request URL, Method, Headers, Request Body, Response Headers, and Response Body with one-tap clipboard copy.
+            - **Image & Video Generation Endpoints**: Full OpenAI-compatible support for `POST /v1/images/generations` (`qwen-image`) and `POST /v1/videos/generations` (`qwen-video`), auto-saving outputs to `/storage/emulated/0/Documents/Qwen/`.
+            - **AI Media Studio Tab**: Native Compose UI for generating and previewing images and videos directly on your device.
+            - **Multimodal Vision & File Attachments**: Added direct file/photo picker to attach images and documents to your chat prompts with automatic Base64 encoding.
           files: build-output/QwenBridge-release.apk

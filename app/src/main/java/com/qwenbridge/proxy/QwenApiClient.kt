@@ -2,6 +2,7 @@ package com.qwenbridge.proxy
 
 import android.content.Context
 import com.google.gson.Gson
+import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import com.qwenbridge.challenge.ChallengeDetector
 import com.qwenbridge.challenge.ChallengeOverlayManager
@@ -13,6 +14,8 @@ import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.BufferedReader
+import java.io.File
+import java.io.FileOutputStream
 import java.io.InputStreamReader
 import java.io.OutputStream
 import java.util.UUID
@@ -28,7 +31,7 @@ class QwenApiClient(private val context: Context) {
     private val okHttpClient = OkHttpClient.Builder()
         .cookieJar(cookieSessionManager)
         .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(120, TimeUnit.SECONDS)
+        .readTimeout(180, TimeUnit.SECONDS)
         .writeTimeout(60, TimeUnit.SECONDS)
         .retryOnConnectionFailure(true)
         .build()
@@ -85,7 +88,7 @@ class QwenApiClient(private val context: Context) {
     }
 
     suspend fun getAvailableModels(): List<OpenAIModel> = withContext(Dispatchers.IO) {
-        val defaultModels = listOf(
+        listOf(
             OpenAIModel("qwen3.8-max"),
             OpenAIModel("qwen3.8-max-preview"),
             OpenAIModel("qwen3.7-max"),
@@ -99,7 +102,6 @@ class QwenApiClient(private val context: Context) {
             OpenAIModel("qwen-video"),
             OpenAIModel("qwen-deep-research")
         )
-        defaultModels
     }
 
     private suspend fun createNewChat(model: String, token: String): String = withContext(Dispatchers.IO) {
@@ -127,11 +129,113 @@ class QwenApiClient(private val context: Context) {
         json.get("id")?.asString ?: json.get("chat_id")?.asString ?: "c_${UUID.randomUUID().toString().take(12)}"
     }
 
+    suspend fun generateImage(
+        imageRequest: OpenAIImageGenerationRequest,
+        token: String
+    ): OpenAIImageGenerationResponse = withContext(Dispatchers.IO) {
+        val payload = mapOf(
+            "prompt" to imageRequest.prompt,
+            "model" to (imageRequest.model ?: "qwen-image"),
+            "size" to (imageRequest.size ?: "1024x1024"),
+            "n" to imageRequest.n
+        )
+        val requestBody = gson.toJson(payload).toRequestBody(JSON_MEDIA_TYPE)
+        val request = Request.Builder()
+            .url("https://chat.qwen.ai/api/v2/images/generations")
+            .headers(buildStandardHeaders(token))
+            .post(requestBody)
+            .build()
+
+        val response = okHttpClient.newCall(request).execute()
+        val respBody = response.body?.string() ?: ""
+
+        if (!response.isSuccessful) {
+            if (ChallengeDetector.isChallenge(response.code, response.header("Content-Type"), respBody)) {
+                challengeOverlayManager.triggerChallengeFlow()
+            }
+            throw RuntimeException("Image generation failed (${response.code}): $respBody")
+        }
+
+        val json = gson.fromJson(respBody, JsonObject::class.java)
+        val dataArray = json.getAsJsonArray("data") ?: JsonArray()
+        val results = mutableListOf<OpenAIImageData>()
+
+        val targetDir = File("/storage/emulated/0/Documents/Qwen")
+        if (!targetDir.exists()) targetDir.mkdirs()
+
+        for (i in 0 until dataArray.size()) {
+            val item = dataArray.get(i).asJsonObject
+            val url = item.get("url")?.asString
+            val b64 = item.get("b64_json")?.asString
+            val revised = item.get("revised_prompt")?.asString
+
+            if (url != null) {
+                // Download in background to Documents/Qwen
+                try {
+                    val imgReq = Request.Builder().url(url).build()
+                    val imgResp = okHttpClient.newCall(imgReq).execute()
+                    if (imgResp.isSuccessful) {
+                        val outFile = File(targetDir, "qwen_${System.currentTimeMillis()}_${i + 1}.png")
+                        imgResp.body?.byteStream()?.use { input ->
+                            FileOutputStream(outFile).use { output ->
+                                input.copyTo(output)
+                            }
+                        }
+                    }
+                } catch (ignored: Exception) {}
+            }
+
+            results.add(OpenAIImageData(url = url, b64Json = b64, revisedPrompt = revised))
+        }
+
+        OpenAIImageGenerationResponse(data = results)
+    }
+
+    suspend fun generateVideo(
+        videoRequest: OpenAIVideoGenerationRequest,
+        token: String
+    ): OpenAIVideoGenerationResponse = withContext(Dispatchers.IO) {
+        val payload = mapOf(
+            "prompt" to videoRequest.prompt,
+            "model" to (videoRequest.model ?: "qwen-video"),
+            "image" to videoRequest.image,
+            "duration" to videoRequest.duration
+        )
+        val requestBody = gson.toJson(payload).toRequestBody(JSON_MEDIA_TYPE)
+        val request = Request.Builder()
+            .url("https://chat.qwen.ai/api/v2/videos/generations")
+            .headers(buildStandardHeaders(token))
+            .post(requestBody)
+            .build()
+
+        val response = okHttpClient.newCall(request).execute()
+        val respBody = response.body?.string() ?: ""
+
+        if (!response.isSuccessful) {
+            if (ChallengeDetector.isChallenge(response.code, response.header("Content-Type"), respBody)) {
+                challengeOverlayManager.triggerChallengeFlow()
+            }
+            throw RuntimeException("Video generation failed (${response.code}): $respBody")
+        }
+
+        val json = gson.fromJson(respBody, JsonObject::class.java)
+        val dataArray = json.getAsJsonArray("data") ?: JsonArray()
+        val results = mutableListOf<OpenAIVideoData>()
+
+        for (i in 0 until dataArray.size()) {
+            val item = dataArray.get(i).asJsonObject
+            val url = item.get("url")?.asString
+            results.add(OpenAIVideoData(url = url, status = "completed"))
+        }
+
+        OpenAIVideoGenerationResponse(data = results)
+    }
+
     suspend fun streamChatCompletion(
         chatRequest: OpenAIChatRequest,
         token: String,
         outputStream: OutputStream
-    ) = withContext(Dispatchers.IO) {
+    ): String = withContext(Dispatchers.IO) {
         val model = chatRequest.model.ifEmpty { configManager.config.value.defaultModel }
         val chatId = createNewChat(model, token)
 
@@ -140,7 +244,7 @@ class QwenApiClient(private val context: Context) {
 
         chatRequest.messages.forEach { msg ->
             if (msg.role == "system") {
-                systemPrompt = (systemPrompt + "\n" + (msg.content ?: "")).trim()
+                systemPrompt = (systemPrompt + "\n" + msg.getTextContent()).trim()
             } else {
                 messagesList.add(msg)
             }
@@ -152,18 +256,29 @@ class QwenApiClient(private val context: Context) {
         }
 
         val qwenMessages = messagesList.map { msg ->
+            val text = msg.getTextContent()
+            val imageUrls = msg.getImageUrls()
+
             val content = if (msg.role == "user" && systemPrompt.isNotEmpty() && msg == messagesList.firstOrNull { it.role == "user" }) {
-                "$systemPrompt\n\n${msg.content ?: ""}"
+                "$systemPrompt\n\n$text"
             } else {
-                msg.content ?: ""
+                text
             }
+
+            val attachments = if (imageUrls.isNotEmpty()) {
+                imageUrls.map { url ->
+                    QwenFileAttachment(type = "image", url = url)
+                }
+            } else null
+
             QwenMessage(
                 fid = UUID.randomUUID().toString(),
                 role = msg.role,
                 content = content,
                 featureConfig = QwenFeatureConfig(
                     thinkingEnabled = chatRequest.enableThinking ?: configManager.config.value.enableThinking
-                )
+                ),
+                files = attachments
             )
         }
 
@@ -201,6 +316,7 @@ class QwenApiClient(private val context: Context) {
 
         val completionId = "chatcmpl-" + UUID.randomUUID().toString().replace("-", "").take(24)
         var accumulatedRawContent = ""
+        var accumulatedReasoningContent = ""
 
         while (reader.readLine().also { line = it } != null) {
             val currentLine = line?.trim() ?: continue
@@ -249,6 +365,9 @@ class QwenApiClient(private val context: Context) {
                         if (contentSnippet != null) {
                             accumulatedRawContent += contentSnippet
                         }
+                        if (reasoningSnippet != null) {
+                            accumulatedReasoningContent += reasoningSnippet
+                        }
 
                         val openaiChunk = OpenAIChatChunkResponse(
                             id = completionId,
@@ -271,5 +390,7 @@ class QwenApiClient(private val context: Context) {
                 }
             }
         }
+
+        accumulatedRawContent
     }
 }

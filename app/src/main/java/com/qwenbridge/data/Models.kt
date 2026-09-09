@@ -6,10 +6,49 @@ import com.google.gson.annotations.SerializedName
 
 data class OpenAIMessage(
     @SerializedName("role") val role: String,
-    @SerializedName("content") val content: String? = null,
+    @SerializedName("content") val content: Any? = null, // String or List<OpenAIContentPart>
     @SerializedName("name") val name: String? = null,
     @SerializedName("tool_calls") val toolCalls: List<OpenAIToolCall>? = null,
     @SerializedName("tool_call_id") val toolCallId: String? = null
+) {
+    fun getTextContent(): String {
+        return when (content) {
+            is String -> content
+            is List<*> -> {
+                content.filterIsInstance<Map<*, *>>().mapNotNull { part ->
+                    val type = part["type"] as? String
+                    if (type == "text") part["text"] as? String else null
+                }.joinToString("\n")
+            }
+            else -> content?.toString() ?: ""
+        }
+    }
+
+    fun getImageUrls(): List<String> {
+        val result = mutableListOf<String>()
+        if (content is List<*>) {
+            content.filterIsInstance<Map<*, *>>().forEach { part ->
+                val type = part["type"] as? String
+                if (type == "image_url") {
+                    val imgObj = part["image_url"] as? Map<*, *>
+                    val url = imgObj?.get("url") as? String
+                    if (url != null) result.add(url)
+                }
+            }
+        }
+        return result
+    }
+}
+
+data class OpenAIContentPart(
+    @SerializedName("type") val type: String, // "text" or "image_url"
+    @SerializedName("text") val text: String? = null,
+    @SerializedName("image_url") val imageUrl: OpenAIImageUrl? = null
+)
+
+data class OpenAIImageUrl(
+    @SerializedName("url") val url: String,
+    @SerializedName("detail") val detail: String? = "auto"
 )
 
 data class OpenAIChatRequest(
@@ -100,6 +139,44 @@ data class OpenAIModelListResponse(
     @SerializedName("data") val data: List<OpenAIModel>
 )
 
+// --- Image & Video Generation Models ---
+
+data class OpenAIImageGenerationRequest(
+    @SerializedName("prompt") val prompt: String,
+    @SerializedName("model") val model: String = "qwen-image",
+    @SerializedName("size") val size: String = "1024x1024",
+    @SerializedName("n") val n: Int = 1,
+    @SerializedName("response_format") val responseFormat: String = "url"
+)
+
+data class OpenAIImageGenerationResponse(
+    @SerializedName("created") val created: Long = System.currentTimeMillis() / 1000,
+    @SerializedName("data") val data: List<OpenAIImageData>
+)
+
+data class OpenAIImageData(
+    @SerializedName("url") val url: String? = null,
+    @SerializedName("b64_json") val b64Json: String? = null,
+    @SerializedName("revised_prompt") val revisedPrompt: String? = null
+)
+
+data class OpenAIVideoGenerationRequest(
+    @SerializedName("prompt") val prompt: String,
+    @SerializedName("model") val model: String = "qwen-video",
+    @SerializedName("image") val image: String? = null,
+    @SerializedName("duration") val duration: Int = 5
+)
+
+data class OpenAIVideoGenerationResponse(
+    @SerializedName("created") val created: Long = System.currentTimeMillis() / 1000,
+    @SerializedName("data") val data: List<OpenAIVideoData>
+)
+
+data class OpenAIVideoData(
+    @SerializedName("url") val url: String? = null,
+    @SerializedName("status") val status: String = "completed"
+)
+
 // --- Qwen Web Specific Models ---
 
 data class QwenNewChatRequest(
@@ -130,7 +207,15 @@ data class QwenMessage(
     @SerializedName("fid") val fid: String,
     @SerializedName("role") val role: String,
     @SerializedName("content") val content: String,
-    @SerializedName("feature_config") val featureConfig: QwenFeatureConfig? = null
+    @SerializedName("feature_config") val featureConfig: QwenFeatureConfig? = null,
+    @SerializedName("files") val files: List<QwenFileAttachment>? = null
+)
+
+data class QwenFileAttachment(
+    @SerializedName("type") val type: String, // "image" or "file"
+    @SerializedName("url") val url: String? = null,
+    @SerializedName("name") val name: String? = null,
+    @SerializedName("size") val size: Long? = null
 )
 
 data class QwenFeatureConfig(
@@ -165,5 +250,9 @@ data class LogEntry(
     val statusCode: Int,
     val durationMs: Long,
     val isChallengeTriggered: Boolean = false,
-    val details: String = ""
+    val details: String = "",
+    val requestHeaders: Map<String, String>? = null,
+    val requestBody: String? = null,
+    val responseHeaders: Map<String, String>? = null,
+    val responseBody: String? = null
 )
