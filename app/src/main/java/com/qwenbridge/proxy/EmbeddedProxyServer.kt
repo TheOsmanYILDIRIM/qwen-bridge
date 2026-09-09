@@ -100,7 +100,7 @@ class EmbeddedProxyServer(
                     details = "Served in ${durationMs}ms",
                     requestHeaders = session.headers,
                     requestBody = postData,
-                    responseHeaders = response.headers,
+                    responseHeaders = mapOf("Content-Type" to (response.mimeType ?: "text/plain")),
                     responseBody = capturedResponseBody
                 )
             )
@@ -196,7 +196,7 @@ class EmbeddedProxyServer(
                 }
             }
 
-            val response = Response.newChunkedResponse(
+            val response = newChunkedResponse(
                 Response.Status.OK,
                 "text/event-stream; charset=utf-8",
                 pipedInputStream
@@ -264,7 +264,7 @@ class EmbeddedProxyServer(
     }
 
     private fun createCorsResponse(status: Response.IStatus, mimeType: String, txt: String): Response {
-        val res = Response.newFixedLengthResponse(status, mimeType, txt)
+        val res = newFixedLengthResponse(status, mimeType, txt)
         addCorsHeaders(res)
         return res
     }
