@@ -152,7 +152,7 @@ class EmbeddedProxyServer(
                 }
             }
 
-            val response = Response.newChunkedResponse(
+            val response = NanoHTTPD.newChunkedResponse(
                 Response.Status.OK,
                 "text/event-stream; charset=utf-8",
                 pipedInputStream
@@ -222,7 +222,7 @@ class EmbeddedProxyServer(
     }
 
     private fun createCorsResponse(status: Response.IStatus, mimeType: String, txt: String): Response {
-        val res = Response.newFixedLengthResponse(status, mimeType, txt)
+        val res = NanoHTTPD.newFixedLengthResponse(status, mimeType, txt)
         addCorsHeaders(res)
         return res
     }
