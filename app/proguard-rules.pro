@@ -1,0 +1,3 @@
+-keep class fi.iki.elonen.** { *; }
+-keep class com.google.gson.** { *; }
+-keep class com.qwenbridge.** { *; }

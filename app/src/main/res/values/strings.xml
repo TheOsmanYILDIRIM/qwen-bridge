@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">Qwen Bridge</string>
+    <string name="notification_channel_name">Qwen Bridge Service</string>
+    <string name="notification_channel_desc">Keeps local Qwen API proxy running</string>
+    <string name="service_running">API Proxy Active • localhost:%1$d</string>
+    <string name="service_stopped">API Proxy Stopped</string>
+</resources>

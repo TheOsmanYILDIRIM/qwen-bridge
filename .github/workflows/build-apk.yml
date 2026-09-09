@@ -1,0 +1,60 @@
+name: Build & Release Qwen Bridge APK
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: gradle
+
+      - name: Grant Execute Permission for Gradlew
+        run: chmod +x gradlew
+
+      - name: Build Android Release APK
+        run: ./gradlew assembleRelease --stacktrace
+
+      - name: Find and Rename APK
+        run: |
+          mkdir -p build-output
+          find app/build/outputs/apk/ -name "*.apk" -exec cp {} build-output/QwenBridge-release.apk \;
+          ls -la build-output/
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: QwenBridge-APK
+          path: build-output/QwenBridge-release.apk
+
+      - name: Create or Update GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main'
+        with:
+          tag_name: v1.0.0
+          name: "Qwen Bridge v1.0.0 (Local API Proxy + Auto Bot Challenge Solver)"
+          body: |
+            ### 🌉 Qwen Bridge Mobile App v1.0.0
+
+            Android foreground service and embedded OpenAI-compatible API bridge for Qwen Web with automated bot challenge & CAPTCHA overlay solver.
+
+            #### 🚀 Key Features:
+            - **Local OpenAI API Proxy**: Embedded NanoHTTPD server at `http://localhost:8787` (`/v1/chat/completions`, `/v1/models`).
+            - **Auto Challenge & WAF Solver**: Detects Alibaba Baxia / Cloudflare challenges, surfaces a floating interactive overlay on screen, and persists session cookies.
+            - **Aggressive Anti-Kill Keep-Alive**: Multi-layer foreground service (`specialUse`), MediaSession keep-alive, WakeLock, Alarm watchdog, and OEM Autostart guidance.
+            - **Tool-Call & Thinking Support**: Real-time translation for MCP/Agentic tools and deep thinking mode.
+          files: build-output/QwenBridge-release.apk
