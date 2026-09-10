@@ -11,6 +11,7 @@ import com.qwenbridge.MainActivity
 import com.qwenbridge.R
 import com.qwenbridge.challenge.ChallengeOverlayManager
 import com.qwenbridge.data.ConfigManager
+import com.qwenbridge.overlay.FloatingStatusOverlay
 import com.qwenbridge.proxy.EmbeddedProxyServer
 
 class QwenBridgeService : Service() {
@@ -19,6 +20,7 @@ class QwenBridgeService : Service() {
     private lateinit var keepAliveManager: KeepAliveManager
     private lateinit var challengeOverlayManager: ChallengeOverlayManager
     private lateinit var configManager: ConfigManager
+    private var floatingStatusOverlay: FloatingStatusOverlay? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -60,6 +62,10 @@ class QwenBridgeService : Service() {
         }
 
         challengeOverlayManager.initOverlay()
+        if (config.floatingOverlay) {
+            floatingStatusOverlay = FloatingStatusOverlay.getInstance(this)
+            floatingStatusOverlay?.show()
+        }
         WatchdogReceiver.scheduleWatchdog(this)
 
         return START_STICKY
@@ -126,6 +132,7 @@ class QwenBridgeService : Service() {
         }
         keepAliveManager.cleanup()
         challengeOverlayManager.destroy()
+        floatingStatusOverlay?.destroy()
         configManager.setServiceRunning(false)
     }
 

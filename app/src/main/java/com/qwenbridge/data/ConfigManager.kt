@@ -57,6 +57,7 @@ class ConfigManager private constructor(context: Context) {
         val autoStart = prefs.getBoolean(KEY_AUTOSTART, true)
         val mediaSession = prefs.getBoolean(KEY_MEDIA_SESSION, true)
         val wakeLock = prefs.getBoolean(KEY_WAKELOCK, true)
+        val floatingOverlay = prefs.getBoolean(KEY_FLOATING_OVERLAY, true)
         val totalReqs = prefs.getLong(KEY_TOTAL_REQS, 0L)
         val lastChallenge = prefs.getLong(KEY_LAST_CHALLENGE, 0L)
 
@@ -69,6 +70,7 @@ class ConfigManager private constructor(context: Context) {
             autoStartOnBoot = autoStart,
             keepAliveMediaSession = mediaSession,
             keepAliveWakeLock = wakeLock,
+            floatingOverlay = floatingOverlay,
             totalRequests = totalReqs,
             lastChallengeSolvedTime = lastChallenge
         )
@@ -108,6 +110,11 @@ class ConfigManager private constructor(context: Context) {
             keepAliveMediaSession = mediaSession,
             keepAliveWakeLock = wakeLock
         )
+    }
+
+    fun updateFloatingOverlay(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_FLOATING_OVERLAY, enabled).apply()
+        _config.value = _config.value.copy(floatingOverlay = enabled)
     }
 
     fun incrementRequestsCount() {
@@ -151,6 +158,7 @@ class ConfigManager private constructor(context: Context) {
         private const val KEY_AUTOSTART = "pref_autostart"
         private const val KEY_MEDIA_SESSION = "pref_media_session"
         private const val KEY_WAKELOCK = "pref_wakelock"
+        private const val KEY_FLOATING_OVERLAY = "pref_floating_overlay"
         private const val KEY_TOTAL_REQS = "pref_total_reqs"
         private const val KEY_LAST_CHALLENGE = "pref_last_challenge"
 

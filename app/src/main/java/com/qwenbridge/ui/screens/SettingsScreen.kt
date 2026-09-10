@@ -1,5 +1,8 @@
 package com.qwenbridge.ui.screens
 
+import android.content.Intent
+import android.net.Uri
+import android.provider.Settings as AndroidSettings
 import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -14,10 +17,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import com.qwenbridge.data.ConfigManager
+import com.qwenbridge.overlay.FloatingStatusOverlay
 import com.qwenbridge.ui.theme.*
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -25,6 +32,21 @@ import com.qwenbridge.ui.theme.*
 fun SettingsScreen(configManager: ConfigManager) {
     val context = LocalContext.current
     val config by configManager.config.collectAsState()
+
+    // Overlay izni verilip geri dönüldüğünde float overlay'i otomatik aç
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME &&
+                configManager.config.value.floatingOverlay &&
+                AndroidSettings.canDrawOverlays(context)
+            ) {
+                FloatingStatusOverlay.getInstance(context).show()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     var portInput by remember { mutableStateOf(config.port.toString()) }
     var selectedModel by remember { mutableStateOf(config.defaultModel) }
@@ -201,6 +223,36 @@ fun SettingsScreen(configManager: ConfigManager) {
                     checked = config.autoStartOnBoot,
                     onCheckedChange = {
                         configManager.updateAutoStart(it)
+                    }
+                )
+
+                HorizontalDivider(color = BorderSubtle)
+
+                SettingToggleRow(
+                    title = "Floating Status Overlay",
+                    desc = "Semi-transparent floating dot showing live server status. Green = reachable, red = down. Tap to open, drag to move.",
+                    checked = config.floatingOverlay,
+                    onCheckedChange = { enabled ->
+                        configManager.updateFloatingOverlay(enabled)
+                        if (enabled) {
+                            if (AndroidSettings.canDrawOverlays(context)) {
+                                FloatingStatusOverlay.getInstance(context).show()
+                            } else {
+                                Toast.makeText(
+                                    context,
+                                    "Overlay permission required - granting...",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                                context.startActivity(
+                                    Intent(
+                                        AndroidSettings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                        Uri.parse("package:${context.packageName}")
+                                    )
+                                )
+                            }
+                        } else {
+                            FloatingStatusOverlay.getInstance(context).destroy()
+                        }
                     }
                 )
 

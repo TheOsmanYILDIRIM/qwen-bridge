@@ -238,6 +238,7 @@ data class AppConfig(
     val autoStartOnBoot: Boolean = true,
     val keepAliveMediaSession: Boolean = true,
     val keepAliveWakeLock: Boolean = true,
+    val floatingOverlay: Boolean = true,
     val totalRequests: Long = 0,
     val lastChallengeSolvedTime: Long = 0
 )
