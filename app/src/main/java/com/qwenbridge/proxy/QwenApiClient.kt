@@ -389,92 +389,131 @@ class QwenApiClient(private val context: Context) {
         val completionId = "chatcmpl-" + UUID.randomUUID().toString().replace("-", "").take(24)
         var accumulatedRawContent = ""
         var accumulatedReasoningContent = ""
+        var streamFinishedCleanly = false  // [DONE] aldık mı?
 
-        while (reader.readLine().also { line = it } != null) {
-            val currentLine = line?.trim() ?: continue
-            if (currentLine.isEmpty() || currentLine.startsWith(":")) continue
+        try {
+            while (reader.readLine().also { line = it } != null) {
+                val currentLine = line?.trim() ?: continue
+                if (currentLine.isEmpty() || currentLine.startsWith(":")) continue
 
-            if (currentLine.startsWith("data:")) {
-                val dataContent = currentLine.removePrefix("data:").trim()
-                if (dataContent == "[DONE]") {
-                    val (cleaned, toolCalls) = ToolCallParser.extractToolCalls(accumulatedRawContent)
-                    if (toolCalls != null) {
-                        val toolChunk = OpenAIChatChunkResponse(
-                            id = completionId,
-                            model = model,
-                            choices = listOf(
-                                OpenAIChunkChoice(
-                                    delta = OpenAIChatDelta(toolCalls = toolCalls),
-                                    finishReason = "tool_calls"
-                                )
-                            )
-                        )
-                        val toolChunkData = "data: ${gson.toJson(toolChunk)}\n\n"
-                        outputStream.write(toolChunkData.toByteArray(Charsets.UTF_8))
-                        outputStream.flush()
-                    } else {
-                        // Cline requires a final chunk with finish_reason="stop" before [DONE]
-                        val finishChunk = OpenAIChatChunkResponse(
-                            id = completionId,
-                            model = model,
-                            choices = listOf(
-                                OpenAIChunkChoice(
-                                    delta = OpenAIChatDelta(),
-                                    finishReason = "stop"
-                                )
-                            )
-                        )
-                        outputStream.write("data: ${gson.toJson(finishChunk)}\n\n".toByteArray(Charsets.UTF_8))
-                        outputStream.flush()
-                    }
-                    outputStream.write("data: [DONE]\n\n".toByteArray(Charsets.UTF_8))
-                    outputStream.flush()
-                    break
-                }
+                if (currentLine.startsWith("data:")) {
+                    val dataContent = currentLine.removePrefix("data:").trim()
 
-                try {
-                    val chunkJson = gson.fromJson(dataContent, JsonObject::class.java)
-
-                    // Check for hidden rate limits in 200 responses
-                    val textContent = chunkJson.toString()
-                    if (ChallengeDetector.isFake200RateLimit(textContent)) {
-                        throw RuntimeException("Upstream Rate Limit encountered inside HTTP 200 payload.")
-                    }
-
-                    val choices = chunkJson.getAsJsonArray("choices")
-                    if (choices != null && choices.size() > 0) {
-                        val firstChoice = choices.get(0).asJsonObject
-                        val delta = firstChoice.getAsJsonObject("delta")
-                        val contentSnippet = delta?.get("content")?.asString
-                        val reasoningSnippet = delta?.get("reasoning_content")?.asString
-
-                        if (contentSnippet != null) {
-                            accumulatedRawContent += contentSnippet
-                        }
-                        if (reasoningSnippet != null) {
-                            accumulatedReasoningContent += reasoningSnippet
-                        }
-
-                        val openaiChunk = OpenAIChatChunkResponse(
-                            id = completionId,
-                            model = model,
-                            choices = listOf(
-                                OpenAIChunkChoice(
-                                    delta = OpenAIChatDelta(
-                                        content = contentSnippet,
-                                        reasoningContent = reasoningSnippet
+                    if (dataContent == "[DONE]") {
+                        streamFinishedCleanly = true
+                        // [DONE] geldi — finish chunk gönder
+                        val (cleaned, toolCalls) = ToolCallParser.extractToolCalls(accumulatedRawContent)
+                        if (toolCalls != null) {
+                            val toolChunk = OpenAIChatChunkResponse(
+                                id = completionId,
+                                model = model,
+                                choices = listOf(
+                                    OpenAIChunkChoice(
+                                        delta = OpenAIChatDelta(toolCalls = toolCalls),
+                                        finishReason = "tool_calls"
                                     )
                                 )
                             )
-                        )
-                        val sseData = "data: ${gson.toJson(openaiChunk)}\n\n"
-                        outputStream.write(sseData.toByteArray(Charsets.UTF_8))
+                            outputStream.write("data: ${gson.toJson(toolChunk)}\n\n".toByteArray(Charsets.UTF_8))
+                            outputStream.flush()
+                        } else {
+                            val finishChunk = OpenAIChatChunkResponse(
+                                id = completionId,
+                                model = model,
+                                choices = listOf(
+                                    OpenAIChunkChoice(
+                                        delta = OpenAIChatDelta(),
+                                        finishReason = "stop"
+                                    )
+                                )
+                            )
+                            outputStream.write("data: ${gson.toJson(finishChunk)}\n\n".toByteArray(Charsets.UTF_8))
+                            outputStream.flush()
+                        }
+                        outputStream.write("data: [DONE]\n\n".toByteArray(Charsets.UTF_8))
                         outputStream.flush()
+                        break
                     }
-                } catch (e: Exception) {
-                    // Ignore transient malformed SSE lines
+
+                    try {
+                        val chunkJson = gson.fromJson(dataContent, JsonObject::class.java)
+
+                        // Sahte 200 rate limit kontrolü
+                        if (ChallengeDetector.isFake200RateLimit(chunkJson.toString())) {
+                            throw RuntimeException("Rate limit inside HTTP 200 payload.")
+                        }
+
+                        // --- Qwen SSE format: choices[]  VEYA  output/content (phase format) ---
+                        var contentSnippet: String? = null
+                        var reasoningSnippet: String? = null
+
+                        val choices = chunkJson.getAsJsonArray("choices")
+                        if (choices != null && choices.size() > 0) {
+                            // Standart OpenAI-uyumlu format
+                            val firstChoice = choices.get(0).asJsonObject
+                            val delta = firstChoice.getAsJsonObject("delta")
+                            contentSnippet = delta?.get("content")?.asString
+                            reasoningSnippet = delta?.get("reasoning_content")?.asString
+                        } else {
+                            // Qwen phase-based format: {"output": {"text": "..."}, "type": "generation"}
+                            val output = chunkJson.getAsJsonObject("output")
+                            if (output != null) {
+                                contentSnippet = output.get("text")?.asString
+                                    ?: output.get("content")?.asString
+                                reasoningSnippet = output.get("reasoning_content")?.asString
+                                    ?: output.get("thinking_content")?.asString
+                            }
+                            // Alternatif: {"content": "..."}
+                            if (contentSnippet == null) {
+                                contentSnippet = chunkJson.get("content")?.asString
+                            }
+                        }
+
+                        if (contentSnippet != null) accumulatedRawContent += contentSnippet
+                        if (reasoningSnippet != null) accumulatedReasoningContent += reasoningSnippet
+
+                        // Sadece içerik varsa chunk gönder (boş chunk gönderme)
+                        if (contentSnippet != null || reasoningSnippet != null) {
+                            val openaiChunk = OpenAIChatChunkResponse(
+                                id = completionId,
+                                model = model,
+                                choices = listOf(
+                                    OpenAIChunkChoice(
+                                        delta = OpenAIChatDelta(
+                                            content = contentSnippet,
+                                            reasoningContent = reasoningSnippet
+                                        )
+                                    )
+                                )
+                            )
+                            outputStream.write("data: ${gson.toJson(openaiChunk)}\n\n".toByteArray(Charsets.UTF_8))
+                            outputStream.flush()
+                        }
+                    } catch (e: Exception) {
+                        // Hatalı SSE satırını atla, devam et
+                    }
                 }
             }
+        } finally {
+            // KRİTİK: [DONE] gelmeden bağlantı kapandıysa (Qwen TCP close) Cline'ı askıda bırakma
+            if (!streamFinishedCleanly) {
+                try {
+                    val finishChunk = OpenAIChatChunkResponse(
+                        id = completionId,
+                        model = model,
+                        choices = listOf(
+                            OpenAIChunkChoice(
+                                delta = OpenAIChatDelta(),
+                                finishReason = "stop"
+                            )
+                        )
+                    )
+                    outputStream.write("data: ${gson.toJson(finishChunk)}\n\n".toByteArray(Charsets.UTF_8))
+                    outputStream.write("data: [DONE]\n\n".toByteArray(Charsets.UTF_8))
+                    outputStream.flush()
+                } catch (ignored: Exception) { }
+            }
+            reader.close()
         }
 
         accumulatedRawContent
