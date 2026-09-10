@@ -181,6 +181,10 @@ class EmbeddedProxyServer(
 
             thread {
                 try {
+                    // Send an immediate SSE comment to flush headers and prevent client read timeout
+                    pipedOutputStream.write(": keep-alive\n\n".toByteArray(Charsets.UTF_8))
+                    pipedOutputStream.flush()
+
                     runBlocking {
                         apiClient.streamChatCompletion(chatRequest, token, pipedOutputStream)
                     }
@@ -188,6 +192,7 @@ class EmbeddedProxyServer(
                     val errJson = gson.toJson(mapOf("error" to (e.message ?: "Stream error")))
                     pipedOutputStream.write("data: $errJson\n\n".toByteArray(Charsets.UTF_8))
                     pipedOutputStream.write("data: [DONE]\n\n".toByteArray(Charsets.UTF_8))
+                    pipedOutputStream.flush()
                 } finally {
                     try {
                         pipedOutputStream.close()
@@ -201,8 +206,9 @@ class EmbeddedProxyServer(
                 pipedInputStream
             )
             addCorsHeaders(response)
-            response.addHeader("Cache-Control", "no-cache")
+            response.addHeader("Cache-Control", "no-cache, no-transform")
             response.addHeader("Connection", "keep-alive")
+            response.addHeader("X-Accel-Buffering", "no")
             return response
         } else {
             val byteStream = ByteArrayOutputStream()
@@ -255,7 +261,17 @@ class EmbeddedProxyServer(
         val authHeader = session.headers["authorization"] ?: session.headers["Authorization"]
         if (!authHeader.isNullOrEmpty() && authHeader.startsWith("Bearer ", ignoreCase = true)) {
             val extracted = authHeader.substring(7).trim()
-            if (extracted.isNotEmpty() && extracted != "YOUR_QWEN_ACCESS_TOKEN") {
+            val dummyTokens = setOf(
+                "your_qwen_access_token",
+                "qwen-local-token",
+                "test",
+                "default",
+                "dummy",
+                "none",
+                "null",
+                "undefined"
+            )
+            if (extracted.isNotEmpty() && !dummyTokens.contains(extracted.lowercase())) {
                 return extracted
             }
         }
