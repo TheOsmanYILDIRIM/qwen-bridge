@@ -118,7 +118,7 @@ class FloatingStatusOverlay private constructor(context: Context) {
     }
 
     private fun startProbe() {
-        probeRunnable = Runnable {
+        val initialProbe = Runnable {
             val r = probeRunnable
             if (r == null) return@Runnable
             val port = configManager.config.value.port
@@ -130,7 +130,8 @@ class FloatingStatusOverlay private constructor(context: Context) {
                 }
             }.start()
         }
-        mainHandler.post(probeRunnable)
+        probeRunnable = initialProbe
+        mainHandler.post(initialProbe)
     }
 
     private fun probePort(port: Int): Boolean {
