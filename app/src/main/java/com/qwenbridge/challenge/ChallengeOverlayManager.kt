@@ -82,7 +82,8 @@ class ChallengeOverlayManager(private val context: Context) {
                         domStorageEnabled = true
                         databaseEnabled = true
                         mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
-                        userAgentString = "Mozilla/5.0 (Linux; Android 14; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36"
+                        // DanyAPI'nin çalışan UA'sı — Android UA WAF tarafından bloklanıyor
+                        userAgentString = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
                     }
                     setBackgroundColor(Color.parseColor("#0F172A"))
 
@@ -265,7 +266,17 @@ class ChallengeOverlayManager(private val context: Context) {
     private fun checkCookiesAndResolution(url: String?) {
         val cookies = CookieManager.getInstance().getCookie(url ?: "https://chat.qwen.ai") ?: ""
         if (cookies.contains("cf_clearance") || cookies.contains("token=")) {
+            // Tüm cookie'leri OkHttp CookieJar'a aktar
             CookieSessionManager.getInstance().setCookie("https://chat.qwen.ai", cookies)
+
+            // Token cookie'sini otomatik yakala ve ConfigManager'a kaydet
+            // (TokenScreen'e gitmeye gerek kalmaz — oturum açınca token kendiliğinden güncellenir)
+            val tokenMatch = Regex("(?:^|;\\s*)token=([^;]+)").find(cookies)
+            val extractedToken = tokenMatch?.groupValues?.get(1)?.trim()
+            if (!extractedToken.isNullOrEmpty()) {
+                configManager.updateToken(extractedToken)
+            }
+
             if (isExpanded) {
                 mainHandler.postDelayed({
                     minimizeOverlay(solved = true)
@@ -273,6 +284,7 @@ class ChallengeOverlayManager(private val context: Context) {
             }
         }
     }
+
 
     fun destroy() {
         mainHandler.post {

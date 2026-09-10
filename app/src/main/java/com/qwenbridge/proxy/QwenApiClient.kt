@@ -38,22 +38,25 @@ class QwenApiClient(private val context: Context) {
 
     private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
 
-    private fun buildStandardHeaders(token: String): Headers {
+    private fun buildStandardHeaders(token: String, refererPath: String = "/"): Headers {
         val builder = Headers.Builder()
-            .add("User-Agent", "Mozilla/5.0 (Linux; Android 14; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36")
-            .add("Accept", "text/event-stream, application/json, text/plain, */*")
-            .add("Accept-Language", "en-US,en;q=0.9,tr;q=0.8")
+            // DanyAPI'nin çalışan UA'sı: desktop Chrome (Android UA engelleniyor)
+            .add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36")
+            .add("Accept", "application/json, text/plain, */*")
+            .add("Accept-Language", "en-US,en;q=0.9")
             .add("Origin", "https://chat.qwen.ai")
-            .add("Referer", "https://chat.qwen.ai/")
-            .add("sec-ch-ua", "\"Chromium\";v=\"128\", \"Not;A=Brand\";v=\"24\", \"Google Chrome\";v=\"128\"")
-            .add("sec-ch-ua-mobile", "?1")
-            .add("sec-ch-ua-platform", "\"Android\"")
+            .add("Referer", "https://chat.qwen.ai$refererPath")
+            .add("sec-ch-ua", "\"Not=A?Brand\";v=\"99\", \"Google Chrome\";v=\"151\", \"Chromium\";v=\"151\"")
+            .add("sec-ch-ua-mobile", "?0")
+            .add("sec-ch-ua-platform", "\"Windows\"")
             .add("Sec-Fetch-Dest", "empty")
             .add("Sec-Fetch-Mode", "cors")
             .add("Sec-Fetch-Site", "same-origin")
             .add("source", "web")
             .add("version", "0.2.83")
             .add("X-Request-Id", UUID.randomUUID().toString())
+            // DanyAPI'nin kritik Timezone header'ı — WAF bu başlığı kontrol ediyor
+            .add("Timezone", buildTimezoneHeader())
 
         if (token.isNotEmpty()) {
             builder.add("Authorization", "Bearer $token")
@@ -65,6 +68,18 @@ class QwenApiClient(private val context: Context) {
         }
 
         return builder.build()
+    }
+
+    /** DanyAPI timezone_header() Kotlin port: "Tue Sep 10 2026 08:23:42 GMT+0300" */
+    private fun buildTimezoneHeader(): String {
+        val sdf = java.text.SimpleDateFormat("EEE MMM dd yyyy HH:mm:ss", java.util.Locale.US)
+        val now = java.util.Date()
+        val tz = java.util.TimeZone.getDefault()
+        val offsetMs = tz.getOffset(now.time)
+        val h = offsetMs / 3600000
+        val m = Math.abs(offsetMs % 3600000) / 60000
+        val sign = if (offsetMs >= 0) "+" else "-"
+        return "${sdf.format(now)} GMT${sign}%02d%02d".format(Math.abs(h), m)
     }
 
     suspend fun validateToken(token: String): Pair<Boolean, String> = withContext(Dispatchers.IO) {
@@ -105,10 +120,16 @@ class QwenApiClient(private val context: Context) {
     }
 
     private suspend fun createNewChat(model: String, token: String): String = withContext(Dispatchers.IO) {
-        val newChatPayload = QwenNewChatRequest(
-            models = listOf(model)
+        // DanyAPI'nin create_chat() tam formatı
+        val payload = mapOf(
+            "chatId" to "",
+            "models" to listOf(model),
+            "project_id" to "",
+            "timestamp" to System.currentTimeMillis(),
+            "chat_type" to "t2t",
+            "chat_mode" to "normal"
         )
-        val body = gson.toJson(newChatPayload).toRequestBody(JSON_MEDIA_TYPE)
+        val body = gson.toJson(payload).toRequestBody(JSON_MEDIA_TYPE)
         val request = Request.Builder()
             .url("https://chat.qwen.ai/api/v2/chats/new")
             .headers(buildStandardHeaders(token))
@@ -121,13 +142,21 @@ class QwenApiClient(private val context: Context) {
         if (!response.isSuccessful) {
             if (ChallengeDetector.isChallenge(response.code, response.header("Content-Type"), respBody)) {
                 challengeOverlayManager.triggerChallengeFlow()
+                throw RuntimeException("WAF challenge triggered — overlay açık, lütfen doğrulayın")
             }
             throw RuntimeException("Failed to create chat (${response.code}): $respBody")
         }
 
+        // DanyAPI'nin _biz() parsing mantığı: {success: true, data: {id: "..."}}
         val json = gson.fromJson(respBody, JsonObject::class.java)
-        json.get("id")?.asString ?: json.get("chat_id")?.asString ?: "c_${UUID.randomUUID().toString().take(12)}"
+        val dataObj = json.getAsJsonObject("data")
+        dataObj?.get("id")?.asString
+            ?: json.get("id")?.asString
+            ?: json.get("chat_id")?.asString
+            ?: "c_${UUID.randomUUID().toString().take(12)}"
     }
+
+
 
     suspend fun generateImage(
         imageRequest: OpenAIImageGenerationRequest,
@@ -255,47 +284,90 @@ class QwenApiClient(private val context: Context) {
             systemPrompt = (systemPrompt + "\n\n" + toolPrompt).trim()
         }
 
-        val qwenMessages = messagesList.map { msg ->
+        val thinkingEnabled = chatRequest.enableThinking ?: configManager.config.value.enableThinking
+        val ts = System.currentTimeMillis() / 1000L // Unix timestamp (saniye)
+
+        // DanyAPI: her mesaj için user_fid + response_fid çifti
+        // Son user mesajı için bu çift kullanılıyor, öncekiler sadece history
+        val userFid = UUID.randomUUID().toString()
+        val responseFid = UUID.randomUUID().toString()
+
+        // Tüm mesajları DanyAPI formatına çevir
+        // Son user mesajı: tam DanyAPI formatı (parentId, childrenIds, user_action, sub_chat_type)
+        // Diğer mesajlar: basit history formatı
+        val lastUserIndex = messagesList.indexOfLast { it.role == "user" }
+
+        val qwenMessagesRaw = messagesList.mapIndexed { index, msg ->
             val text = msg.getTextContent()
             val imageUrls = msg.getImageUrls()
 
-            val content = if (msg.role == "user" && systemPrompt.isNotEmpty() && msg == messagesList.firstOrNull { it.role == "user" }) {
+            val content = if (msg.role == "user" && systemPrompt.isNotEmpty() &&
+                msg == messagesList.firstOrNull { it.role == "user" }) {
                 "$systemPrompt\n\n$text"
             } else {
                 text
             }
 
-            val attachments = if (imageUrls.isNotEmpty()) {
-                imageUrls.map { url ->
-                    QwenFileAttachment(type = "image", url = url)
-                }
-            } else null
+            val isLastUser = (index == lastUserIndex && msg.role == "user")
+            val fid = if (isLastUser) userFid else UUID.randomUUID().toString()
 
-            QwenMessage(
-                fid = UUID.randomUUID().toString(),
-                role = msg.role,
-                content = content,
-                featureConfig = QwenFeatureConfig(
-                    thinkingEnabled = chatRequest.enableThinking ?: configManager.config.value.enableThinking
-                ),
-                files = attachments
+            val featureConfig = mapOf(
+                "thinking_enabled" to thinkingEnabled,
+                "output_schema" to "phase",
+                "research_mode" to "normal",
+                "auto_thinking" to thinkingEnabled,
+                "thinking_mode" to (if (thinkingEnabled) "Auto" else "Manual"),
+                "thinking_format" to "summary",
+                "auto_search" to false
+            )
+
+            val attachments = if (imageUrls.isNotEmpty()) {
+                imageUrls.map { url -> mapOf("type" to "image", "url" to url) }
+            } else emptyList<Map<String, String>>()
+
+            // DanyAPI'nin tam mesaj yapısı
+            mapOf(
+                "id" to null,
+                "fid" to fid,
+                "parentId" to null,               // history için null, son mesaj için de null (tek chat)
+                "childrenIds" to (if (isLastUser) listOf(responseFid) else emptyList<String>()),
+                "role" to msg.role,
+                "content" to content,
+                "user_action" to (if (msg.role == "user") "chat" else ""),
+                "files" to attachments,
+                "timestamp" to ts,
+                "models" to listOf(model),
+                "model" to "",
+                "chat_type" to "t2t",
+                "feature_config" to featureConfig,
+                "extra" to mapOf("meta" to mapOf("subChatType" to "t2t")),
+                "sub_chat_type" to "t2t",
+                "parent_id" to null
             )
         }
 
-        val qwenPayload = QwenChatRequest(
-            stream = true,
-            version = "2.1",
-            incrementalOutput = true,
-            chatId = chatId,
-            chat_id = chatId,
-            model = model,
-            messages = qwenMessages
+        // DanyAPI'nin completion() tam body formatı
+        val qwenPayload = mapOf(
+            "stream" to true,
+            "version" to "2.1",
+            "incremental_output" to true,
+            "chatId" to chatId,
+            "parentId" to "",
+            "chat_id" to chatId,
+            "chat_mode" to "normal",
+            "model" to model,
+            "parent_id" to null,
+            "messages" to qwenMessagesRaw,
+            "timestamp" to ts
         )
 
         val requestBody = gson.toJson(qwenPayload).toRequestBody(JSON_MEDIA_TYPE)
         val request = Request.Builder()
             .url("https://chat.qwen.ai/api/v2/chat/completions?chat_id=$chatId")
-            .headers(buildStandardHeaders(token))
+            // DanyAPI: stream isteğinde Referer chat sayfasına işaret ediyor
+            .headers(buildStandardHeaders(token, "/c/$chatId"))
+            .addHeader("Accept", "text/event-stream")
+            .addHeader("X-Accel-Buffering", "no")
             .post(requestBody)
             .build()
 

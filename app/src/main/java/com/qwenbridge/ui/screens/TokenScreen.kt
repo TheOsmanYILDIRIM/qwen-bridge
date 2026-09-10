@@ -245,7 +245,9 @@ fun TokenScreen(configManager: ConfigManager) {
                                     )
                                     settings.javaScriptEnabled = true
                                     settings.domStorageEnabled = true
-                                    settings.userAgentString = "Mozilla/5.0 (Linux; Android 14; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36"
+                                    settings.databaseEnabled = true
+                                    // DanyAPI'nin çalışan UA — Android UA WAF tarafından bloklanıyor
+                                    settings.userAgentString = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
 
                                     addJavascriptInterface(object {
                                         @JavascriptInterface
@@ -255,7 +257,7 @@ fun TokenScreen(configManager: ConfigManager) {
                                                 post {
                                                     tokenInput = token
                                                     showEmbeddedLogin = false
-                                                    Toast.makeText(ctx, "Token successfully extracted!", Toast.LENGTH_LONG).show()
+                                                    Toast.makeText(ctx, "✅ Token otomatik yakalandı!", Toast.LENGTH_LONG).show()
                                                 }
                                             }
                                         }
@@ -264,10 +266,36 @@ fun TokenScreen(configManager: ConfigManager) {
                                     webViewClient = object : WebViewClient() {
                                         override fun onPageFinished(view: WebView?, url: String?) {
                                             super.onPageFinished(view, url)
+
+                                            // Cookie'leri OkHttp CookieJar'a aktar (bot challenge sonrası)
+                                            val cookies = android.webkit.CookieManager.getInstance()
+                                                .getCookie("https://chat.qwen.ai") ?: ""
+                                            if (cookies.isNotEmpty()) {
+                                                com.qwenbridge.challenge.CookieSessionManager.getInstance()
+                                                    .setCookie("https://chat.qwen.ai", cookies)
+                                            }
+
+                                            // Token yakalama: localStorage + cookie ikisinden birinden al
                                             val js = """
                                                 (function() {
-                                                    const t = localStorage.getItem('token');
-                                                    if (t) {
+                                                    // 1. localStorage'dan dene
+                                                    let t = localStorage.getItem('token');
+                                                    
+                                                    // 2. Cookie'den dene
+                                                    if (!t) {
+                                                        const m = document.cookie.match(/(?:^|;\\s*)token=([^;]+)/);
+                                                        if (m) t = m[1];
+                                                    }
+                                                    
+                                                    // 3. Authorization header'dan dene (Redux store)
+                                                    if (!t && window.__store__) {
+                                                        try {
+                                                            const state = window.__store__.getState();
+                                                            t = state?.auth?.token || state?.user?.token;
+                                                        } catch(e) {}
+                                                    }
+                                                    
+                                                    if (t && t.length > 20) {
                                                         TokenExtractor.onTokenFound(t);
                                                     }
                                                 })();
@@ -282,6 +310,7 @@ fun TokenScreen(configManager: ConfigManager) {
                         )
                     }
                 }
+
             }
         }
     }
