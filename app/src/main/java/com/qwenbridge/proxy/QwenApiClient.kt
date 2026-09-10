@@ -340,6 +340,20 @@ class QwenApiClient(private val context: Context) {
                         val toolChunkData = "data: ${gson.toJson(toolChunk)}\n\n"
                         outputStream.write(toolChunkData.toByteArray(Charsets.UTF_8))
                         outputStream.flush()
+                    } else {
+                        // Cline requires a final chunk with finish_reason="stop" before [DONE]
+                        val finishChunk = OpenAIChatChunkResponse(
+                            id = completionId,
+                            model = model,
+                            choices = listOf(
+                                OpenAIChunkChoice(
+                                    delta = OpenAIChatDelta(),
+                                    finishReason = "stop"
+                                )
+                            )
+                        )
+                        outputStream.write("data: ${gson.toJson(finishChunk)}\n\n".toByteArray(Charsets.UTF_8))
+                        outputStream.flush()
                     }
                     outputStream.write("data: [DONE]\n\n".toByteArray(Charsets.UTF_8))
                     outputStream.flush()
